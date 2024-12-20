@@ -2,6 +2,9 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
+import time
+import jwt
+from functools import wraps
 
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///project.db'
@@ -10,6 +13,37 @@ db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
 from flask import jsonify, request
+
+def requires_user(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+
+        if not token:
+            return jsonify({'reason': 'Missing token'}), 401
+
+        try:
+            payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+        except Exception as e:
+            return jsonify({'reason': 'Invalid token'}), 401
+
+        user_id = payload.get('user_id')
+        created_at = payload.get('created_at')
+
+        if not user_id or not created_at:
+            return jsonify({'reason': 'Invalid token'}), 401
+
+        user = User.query.filter_by(id=user_id).first()
+        if not user:
+            return jsonify({'reason': 'User not found'}), 401
+
+        if created_at + 60 * 60 * 24 < int(time.time()):
+            return jsonify({'reason': 'Token expired'}), 401
+
+        return func(user, *args, **kwargs)
+
+    return wrapper
+
 
 class Country(db.Model):
     __tablename__ = "countries"
@@ -137,8 +171,25 @@ def register():
     db.session.commit()
     return jsonify({'profile': new_user.to_dict()}), 201
 
+@app.route('/api/auth/sign-in', methods=['POST'])
+def login():
+    data = request.get_json()
+    user_login = data.get('login')
+    password = data.get('password')
 
+    if not login or not password:
+        return jsonify({'reason': 'missing data'}), 400
+
+    user: User = User.query.filter_by(login=user_login).first()
+    if not user:
+        return jsonify({'reason': 'no such user'}), 401
+    if not user.check_password(password):
+        return jsonify({'reason': 'wrong password'}), 401
+
+    token = jwt.encode({'user_id': user.id, 'created_at': int(time.time())}, app.config['SECRET_KEY'],
+                       algorithm='HS256')
+
+    return jsonify({'token': token}), 200
 
 if __name__ == "__main__":
-
-    app.run(port=57424, debug=True)
+    app.run(port=26262, debug=True)
